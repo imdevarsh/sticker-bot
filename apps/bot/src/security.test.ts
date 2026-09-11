@@ -136,3 +136,91 @@ test("proxy fails closed on all errors and does not replay mutations", async () 
     /Invalid/,
   );
 });
+
+test("upload retries 429 with the same form and respects Retry-After", async () => {
+  const form = new FormData();
+  form.set("name", "same-name");
+  form.set("file", new Blob(["image"]), "image.png");
+  let calls = 0;
+  const waits: number[] = [];
+  await emojiProxyRequest(
+    "https://proxy.test",
+    "secret",
+    "upload",
+    { method: "POST", body: form },
+    mockFetch((_url, init) => {
+      assert.equal(init?.body, form);
+      calls++;
+      return calls < 3
+        ? new Response(null, { status: 429, headers: { "Retry-After": "2" } })
+        : Response.json({ ok: true });
+    }),
+    async (ms) => {
+      waits.push(ms);
+    },
+  );
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [2250, 2250]);
+});
+
+test("upload retries are bounded and use exponential fallback", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  await assert.rejects(
+    emojiProxyRequest(
+      "https://proxy.test",
+      "secret",
+      "upload",
+      {},
+      mockFetch(() => {
+        calls++;
+        return new Response(null, { status: 429 });
+      }),
+      async (ms) => {
+        waits.push(ms);
+      },
+    ),
+    /HTTP 429/,
+  );
+  assert.equal(calls, 5);
+  assert.deepEqual(waits, [1250, 2250, 4250, 8250]);
+});
+
+test("upload does not replay ambiguous errors or shorten long Retry-After", async () => {
+  for (const status of [400, 401, 403, 409, 500, 502, 503, 504, 429]) {
+    let calls = 0;
+    await assert.rejects(
+      emojiProxyRequest(
+        "https://proxy.test",
+        "secret",
+        "upload",
+        {},
+        mockFetch(() => {
+          calls++;
+          return new Response(null, {
+            status,
+            headers: { "Retry-After": "120" },
+          });
+        }),
+        async () => {
+          assert.fail("must not wait");
+        },
+      ),
+    );
+    assert.equal(calls, 1);
+  }
+  let calls = 0;
+  await assert.rejects(
+    emojiProxyRequest(
+      "https://proxy.test",
+      "secret",
+      "upload",
+      {},
+      mockFetch(() => {
+        calls++;
+        throw new Error("timeout");
+      }),
+    ),
+  );
+  assert.equal(calls, 1);
+});
