@@ -21,6 +21,33 @@ import {
   recommendedStickerDimensions,
 } from "./utils";
 
+
+function stickerFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  const proxyStatus = /^Emoji proxy rejected (upload|remove) \(HTTP (\d{3})\)$/.exec(message);
+  if (proxyStatus) return `Emoji proxy returned HTTP ${proxyStatus[2]}.`;
+  const safeMessages = new Set([
+    "Invalid emoji proxy URL",
+    "Emoji proxy request failed; check proxy activity before retrying",
+    "Emoji exceeds the proxy's 128 KiB limit",
+    "Invalid sticker name or dimensions",
+    "Sticker grid exceeds image dimensions",
+    "Untrusted Slack file URL",
+    "Could not download Slack image",
+    "Image exceeds 10 MiB",
+    "Unsupported image or image exceeds pixel/frame limits",
+  ]);
+  if (safeMessages.has(message)) return message;
+  // Only explicitly known Slack error codes are safe to expose.
+  const code = (error as { data?: { error?: unknown } } | null)?.data?.error;
+  if (typeof code === "string" && [
+    "missing_scope", "not_authed", "invalid_auth", "token_revoked",
+    "not_in_channel", "channel_not_found", "already_reacted", "ratelimited",
+    "cant_delete_message", "message_not_found",
+  ].includes(code)) return `Slack API: ${code}.`;
+  return "The operation failed; the cause could not be classified safely.";
+}
+
 const reservedTitles = new Set(); // when the button is clicked to start creating a sticker, it is added here, to prevent duplication
 
 const ALLOWED_CHANNELS = env.PUBLIC_SLACK_CHANNELS.split(",") // split comma-separated list
@@ -651,11 +678,13 @@ app.view("custom_dimensions", async ({ client, body, view, ack }) => {
       thread_ts: message.ts,
       text: `P.S. You can access this sticker and many more on the website at ${env.BASE_URL}\nTo delete this sticker, run: /delete-sticker ${title}`,
     });
-  } catch {
+  } catch (error) {
+    const reason = stickerFailureReason(error);
+    app.logger.error("Sticker creation failed", { reason });
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: message.ts,
-      text: "Sticker creation failed. Please contact the operator before retrying; some emoji may already have been uploaded.",
+      text: `Sticker creation failed: ${reason} Please contact the operator before retrying; some emoji may already have been uploaded.`,
     });
   } finally {
     reservedTitles.delete(title);
@@ -809,11 +838,13 @@ app.action(/^\d{1,2}x\d{1,2}$/, async ({ client, action, body, ack }) => {
       thread_ts: message.ts,
       text: `P.S. You can access this sticker and many more on the website at ${env.BASE_URL}\nTo delete this sticker, run: /delete-sticker ${title}`,
     });
-  } catch {
+  } catch (error) {
+    const reason = stickerFailureReason(error);
+    app.logger.error("Sticker creation failed", { reason });
     await client.chat.postMessage({
       channel: body.channel.id,
       thread_ts: message.ts,
-      text: "Sticker creation failed. Please contact the operator before retrying; some emoji may already have been uploaded.",
+      text: `Sticker creation failed: ${reason} Please contact the operator before retrying; some emoji may already have been uploaded.`,
     });
   } finally {
     reservedTitles.delete(title);
