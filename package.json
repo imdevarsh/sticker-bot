@@ -9,8 +9,7 @@
     "start:bot": "turbo start --filter=@repo/bot",
     "typecheck": "turbo typecheck",
     "db:push": "cd packages/db && bun db:push",
-    "db:studio": "cd packages/db && bun db:studio",
-    "test": "bun test"
+    "db:studio": "cd packages/db && bun db:studio"
   },
   "workspaces": {
     "packages": [
