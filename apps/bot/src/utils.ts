@@ -6,6 +6,7 @@ import { sql } from "@repo/db";
 import { db } from "@repo/db/client";
 
 import { env } from "./env";
+import { make67Sticker } from "./67ify.ts";
 import { emojiProxyRequest } from "./emoji-proxy.ts";
 import {
   downloadSlackImage,
@@ -120,6 +121,7 @@ export async function createSticker({
   channel,
   timestamp,
   app,
+  sixtySeven = false,
 }: {
   fileUrl: string;
   title: string;
@@ -128,16 +130,18 @@ export async function createSticker({
   channel: string;
   timestamp: string;
   app: App<StringIndexed>;
+  sixtySeven?: boolean;
 }): Promise<string[]> {
   await app.client.chat.postMessage({
     channel: channel,
     thread_ts: timestamp,
-    text: `Creating new ${width}x${height} sticker: "${title}"`,
+    text: `Creating new ${width}x${height} ${sixtySeven ? "67ified " : ""}sticker: "${title}"`,
   });
 
   validateStickerInput(title, width, height);
+  const source = await downloadSlackImage(fileUrl, env.SLACK_BOT_TOKEN);
   const image = sharp(
-    await downloadSlackImage(fileUrl, env.SLACK_BOT_TOKEN),
+    sixtySeven ? await make67Sticker(source, width, height) : source,
     IMAGE_OPTIONS,
   );
   const imgMetadata = await image.metadata();
@@ -175,6 +179,8 @@ export async function createSticker({
           fit: "fill",
         });
 
+      if (sixtySeven) newImg.gif({ keepDuplicateFrames: true });
+
       if (isAnimated && (await newImg.toBuffer()).byteLength / 1000 > 128) {
         let quality = 60;
         while (quality >= 10) {
@@ -197,7 +203,9 @@ export async function createSticker({
         }
       }
 
-      const buf = await newImg.toBuffer();
+      const { data: buf, info } = await newImg.toBuffer({
+        resolveWithObject: true,
+      });
 
       const emojiName = `${title}-${x + 1}-${y + 1}-${randomChars(8)}`;
       console.log(
@@ -208,7 +216,7 @@ export async function createSticker({
       await uploadEmoji({
         emojiName: emojiName,
         image: Buffer.from(buf), // don't ask why this works
-        type: (await newImg.metadata()).format,
+        type: info.format,
       });
       emojis.push(emojiName);
     }

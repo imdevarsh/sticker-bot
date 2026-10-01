@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@ianvs/prettier-plugin-sort-imports": "^4.7.1",
-    "@prettier/plugin-oxc": "^0.2.1",
+    "@prettier/plugin-oxc": "^0.2.3",
     "prettier": "catalog:",
     "prettier-plugin-svelte": "^4.1.1"
   },

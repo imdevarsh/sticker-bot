@@ -1,4 +1,4 @@
-import { createPublicKey, type JsonWebKey } from "node:crypto";
+import { createPublicKey, type JsonWebKeyInput } from "node:crypto";
 import jwt from "jsonwebtoken";
 
 export async function verifySlackIdentity(
@@ -16,7 +16,7 @@ export async function verifySlackIdentity(
   });
   if (!response.ok) throw new Error("Could not retrieve Slack signing keys");
   const { keys } = (await response.json()) as {
-    keys: (JsonWebKey & { kid?: string })[];
+    keys: (JsonWebKeyInput["key"] & { kid?: string })[];
   };
   const key = keys.find(
     (key) => key.kid === decoded.header.kid && key.kty === "RSA",

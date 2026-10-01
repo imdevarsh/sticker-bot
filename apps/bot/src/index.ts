@@ -7,6 +7,7 @@ import { db } from "@repo/db/client";
 import { stickerLikes, stickers } from "@repo/db/schema";
 
 import { env } from "./env";
+import { stickerEffectCheckbox, wants67 } from "./sticker-effect.ts";
 import {
   downloadSlackImage,
   IMAGE_OPTIONS,
@@ -379,8 +380,13 @@ app.message(async ({ client, message }) => {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "Choose the size of the sticker below!",
+          text: "Want the 67ify animation? Tick the box, then choose your sticker size!",
         },
+      },
+      {
+        type: "actions",
+        block_id: "sticker_effect",
+        elements: [stickerEffectCheckbox()],
       },
       {
         type: "actions",
@@ -440,6 +446,10 @@ app.message(async ({ client, message }) => {
       },
     ],
   });
+});
+
+app.action("sticker_effect", async ({ ack }) => {
+  await ack();
 });
 
 app.action("custom", async ({ client, action, body, ack }) => {
@@ -533,6 +543,13 @@ app.action("custom", async ({ client, action, body, ack }) => {
             is_decimal_allowed: false,
           },
         },
+        {
+          type: "input",
+          block_id: "sticker_effect",
+          optional: true,
+          label: { type: "plain_text", text: "Animation" },
+          element: stickerEffectCheckbox(wants67(body.state)),
+        },
       ],
       submit: {
         type: "plain_text",
@@ -621,6 +638,7 @@ app.view("custom_dimensions", async ({ client, body, view, ack }) => {
       channel: channelId,
       timestamp: message.ts!,
       app: app,
+      sixtySeven: wants67(view.state),
     });
 
     try {
@@ -781,6 +799,7 @@ app.action(/^\d{1,2}x\d{1,2}$/, async ({ client, action, body, ack }) => {
       channel: body.channel.id,
       timestamp: message.ts!,
       app: app,
+      sixtySeven: wants67(body.state),
     });
 
     try {
@@ -1013,10 +1032,15 @@ app.command(/\/delete-sticker.*/, async ({ command, ack, respond }) => {
     where: eq(stickers.title, stickerTitle),
   });
 
-  if (!sticker) return await respond("I couldn't find that sticker.");
+  if (!sticker) {
+    await respond("I couldn't find that sticker.");
+    return;
+  }
 
-  if (sticker.creator !== command.user_id)
-    return await respond("You didn't create that sticker.");
+  if (sticker.creator !== command.user_id) {
+    await respond("You didn't create that sticker.");
+    return;
+  }
 
   await respond("I'm deleting the sticker now.");
 
@@ -1036,3 +1060,4 @@ app.command(/\/delete-sticker.*/, async ({ command, ack, respond }) => {
 
 await app.start();
 app.logger.info("StickerBot has started!!");
+

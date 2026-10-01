@@ -19,8 +19,8 @@
   "devDependencies": {
     "@repo/prettier": "workspace:*",
     "@repo/tsconfig": "workspace:*",
-    "@types/bun": "latest",
-    "drizzle-kit": "^0.31.10",
+    "@types/bun": "^1.4.2",
+    "drizzle-kit": "^0.31.11",
     "prettier": "catalog:"
   },
   "peerDependencies": {
@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.3"
   },
   "prettier": "@repo/prettier"
 }
