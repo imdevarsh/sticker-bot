@@ -66,7 +66,8 @@ export async function make67Sticker(
         .png()
         .toBuffer(),
     );
-    delays.push(meta.delay?.[page] ?? 100);
+    // Still GIFs can carry a zero delay; give generated frames a real duration.
+    delays.push(pages > 1 ? meta.delay?.[page] || 100 : 100);
   }
 
   return sharp(frames, { join: { animated: true } })
