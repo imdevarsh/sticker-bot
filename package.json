@@ -1,6 +1,6 @@
 {
   "name": "sticker-bot",
-  "packageManager": "bun@1.2.8",
+  "packageManager": "bun@1.4.2",
   "scripts": {
     "turbo": "turbo",
     "format": "turbo run format --continue -- --cache --cache-location .cache/.prettiercache",
@@ -18,14 +18,14 @@
       "tooling/*"
     ],
     "catalog": {
-      "typescript": "^5.8.3",
-      "@t3-oss/env-core": "^0.13.8",
-      "zod": "^4.0.5",
-      "dotenv-cli": "^8.0.0",
-      "prettier": "3.9.5"
+      "typescript": "^7.0.2",
+      "@t3-oss/env-core": "^0.13.11",
+      "zod": "^4.6.5",
+      "dotenv-cli": "^11.0.0",
+      "prettier": "3.9.9"
     }
   },
   "devDependencies": {
-    "turbo": "^2.10.4"
+    "turbo": "^2.11.5"
   }
 }
