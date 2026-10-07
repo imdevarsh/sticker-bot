@@ -30,7 +30,10 @@ export async function emojiProxyRequest(
           headers,
           redirect: "error",
           // The proxy can make five 30-second Slack attempts plus four 30-second waits.
-          signal: AbortSignal.timeout(330_000),
+          signal: AbortSignal.any([
+            AbortSignal.timeout(330_000),
+            ...(init.signal ? [init.signal] : []),
+          ]),
         },
       );
     } catch {
@@ -51,7 +54,18 @@ export async function emojiProxyRequest(
       // Never shorten a server-requested wait. Fail rather than hold a job indefinitely.
       if (delay <= 60_000) {
         await response.body?.cancel();
-        await wait(delay + 250);
+        if (init.signal) {
+          init.signal.throwIfAborted();
+          await new Promise<void>((resolve, reject) => {
+            const aborted = () => reject(init.signal!.reason);
+            init.signal!.addEventListener("abort", aborted, { once: true });
+            wait(delay + 250)
+              .then(resolve, reject)
+              .finally(() =>
+                init.signal!.removeEventListener("abort", aborted),
+              );
+          });
+        } else await wait(delay + 250);
         continue;
       }
     }

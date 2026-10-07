@@ -2,8 +2,8 @@ import sharp from "sharp";
 
 import {
   IMAGE_OPTIONS,
-  validDimensions,
   validateImageMetadata,
+  validDimensions,
 } from "./security.ts";
 
 // Adapted from imdevarsh/67ify's server/lib/67ify.ts (mode 67).
@@ -12,6 +12,7 @@ export async function make67Sticker(
   image: Buffer,
   columns: number,
   rows: number,
+  signal?: AbortSignal,
 ) {
   if (!validDimensions(columns, rows))
     throw new Error("Invalid sticker name or dimensions");
@@ -40,6 +41,7 @@ export async function make67Sticker(
   const delays: number[] = [];
 
   for (let i = 0; i < frameCount; i++) {
+    signal?.throwIfAborted();
     const page = pages > 1 ? i : 0;
     const transformed = await sharp(image, { ...IMAGE_OPTIONS, page, pages: 1 })
       .ensureAlpha()
@@ -51,6 +53,7 @@ export async function make67Sticker(
         background: { r: 0, g: 0, b: 0, alpha: 0 },
       })
       .png()
+      .timeout({ seconds: 30 })
       .toBuffer();
 
     frames.push(
@@ -64,6 +67,7 @@ export async function make67Sticker(
       })
         .composite([{ input: transformed, gravity: "center" }])
         .png()
+        .timeout({ seconds: 30 })
         .toBuffer(),
     );
     // Still GIFs can carry a zero delay; give generated frames a real duration.
@@ -72,5 +76,6 @@ export async function make67Sticker(
 
   return sharp(frames, { join: { animated: true } })
     .gif({ delay: delays, loop: 0, keepDuplicateFrames: true })
+    .timeout({ seconds: 30 })
     .toBuffer();
 }

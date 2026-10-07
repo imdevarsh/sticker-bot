@@ -4,16 +4,32 @@ import sharp from "sharp";
 
 import { and, desc, eq, exists, sql } from "@repo/db";
 import { db } from "@repo/db/client";
-import { stickerLikes, stickers } from "@repo/db/schema";
+import { sessions, stickerLikes, stickers } from "@repo/db/schema";
 
 import { env } from "./env";
-import { stickerEffectCheckbox, wants67 } from "./sticker-effect.ts";
+import {
+  BotBusyError,
+  checkRateLimit,
+  withImagePreview,
+} from "./resource-limits";
 import {
   downloadSlackImage,
   IMAGE_OPTIONS,
-  validDimensions,
   validateImageMetadata,
+  validateStickerInput,
+  validDimensions,
 } from "./security.ts";
+import { stickerEffectCheckbox, wants67 } from "./sticker-effect.ts";
+import {
+  claimDeletion,
+  finishCreation,
+  finishDeletion,
+  markJobFailed,
+  recordDeleted,
+  recordPending,
+  recordUploaded,
+  reserveCreation,
+} from "./sticker-jobs";
 import {
   createSticker,
   deleteEmojis,
@@ -22,10 +38,11 @@ import {
   recommendedStickerDimensions,
 } from "./utils";
 
-
 function stickerFailureReason(error: unknown): string {
+  if (error instanceof BotBusyError) return error.message;
   const message = error instanceof Error ? error.message : "";
-  const proxyStatus = /^Emoji proxy rejected (upload|remove) \(HTTP (\d{3})\)$/.exec(message);
+  const proxyStatus =
+    /^Emoji proxy rejected (upload|remove) \(HTTP (\d{3})\)$/.exec(message);
   if (proxyStatus) return `Emoji proxy returned HTTP ${proxyStatus[2]}.`;
   const safeMessages = new Set([
     "Invalid emoji proxy URL",
@@ -41,11 +58,22 @@ function stickerFailureReason(error: unknown): string {
   if (safeMessages.has(message)) return message;
   // Only explicitly known Slack error codes are safe to expose.
   const code = (error as { data?: { error?: unknown } } | null)?.data?.error;
-  if (typeof code === "string" && [
-    "missing_scope", "not_authed", "invalid_auth", "token_revoked",
-    "not_in_channel", "channel_not_found", "already_reacted", "ratelimited",
-    "cant_delete_message", "message_not_found",
-  ].includes(code)) return `Slack API: ${code}.`;
+  if (
+    typeof code === "string" &&
+    [
+      "missing_scope",
+      "not_authed",
+      "invalid_auth",
+      "token_revoked",
+      "not_in_channel",
+      "channel_not_found",
+      "already_reacted",
+      "ratelimited",
+      "cant_delete_message",
+      "message_not_found",
+    ].includes(code)
+  )
+    return `Slack API: ${code}.`;
   return "The operation failed; the cause could not be classified safely.";
 }
 
@@ -316,10 +344,7 @@ app.message(async ({ client, message }) => {
   if (
     !message.text ||
     message.text.length < 1 ||
-    message.text
-      .split("")
-      .filter((x) => !"abcdefghijklmnopqrstuvwxyz1234567890-_".includes(x))
-      .length !== 0
+    !/^[a-z0-9_-]+$/.test(message.text)
   ) {
     await client.chat.postMessage({
       channel: message.channel,
@@ -350,21 +375,26 @@ app.message(async ({ client, message }) => {
     return;
   }
 
-  const imageMeta = await sharp(
-    await downloadSlackImage(file.url_private!, env.SLACK_BOT_TOKEN),
-    IMAGE_OPTIONS,
-  ).metadata();
-
-  if (imageMeta.pages && imageMeta.pages > 50) {
+  let imageMeta: Awaited<ReturnType<ReturnType<typeof sharp>["metadata"]>>;
+  try {
+    imageMeta = await withImagePreview(message.user ?? "unknown", async () => {
+      const meta = await sharp(
+        await downloadSlackImage(file.url_private!, env.SLACK_BOT_TOKEN),
+        IMAGE_OPTIONS,
+      )
+        .timeout({ seconds: 15 })
+        .metadata();
+      validateImageMetadata(meta);
+      return meta;
+    });
+  } catch (error) {
     await client.chat.postMessage({
       channel: message.channel,
       thread_ts: message.ts,
-      text: `your animated image can have a maximum of 50 frames! (currently it has ${imageMeta.pages} frames)`,
+      text: `Could not preview this image: ${stickerFailureReason(error)}`,
     });
     return;
   }
-
-  validateImageMetadata(imageMeta);
 
   const recommended = recommendedStickerDimensions(
     imageMeta.width,
@@ -475,7 +505,7 @@ app.action("custom", async ({ client, action, body, ack }) => {
     })
   )?.messages?.[0];
 
-  if (!message) throw new Error("message not found!");
+  if (!message || message.ts !== body.message.thread_ts) return;
 
   if (message.user !== body.user.id) {
     await client.chat.postEphemeral({
@@ -489,11 +519,6 @@ app.action("custom", async ({ client, action, body, ack }) => {
 
   const title = message.text;
   if (!title) return;
-
-  await client.chat.delete({
-    channel: body.channel.id,
-    ts: body.message.ts,
-  });
 
   await client.views.open({
     trigger_id: body.trigger_id,
@@ -558,18 +583,29 @@ app.action("custom", async ({ client, action, body, ack }) => {
       private_metadata: body.channel.id + ";;" + message.ts,
     },
   });
+  await client.chat.delete({ channel: body.channel.id, ts: body.message.ts });
 });
 
-app.view("custom_dimensions", async ({ client, body, view, ack }) => {
-  await ack();
-  if (body.type !== "view_submission") return;
-  const width = Number(view.state.values.width?.width?.value);
-  const height = Number(view.state.values.height?.height?.value);
-  if (!validDimensions(width, height)) return;
-
-  const [channelId, messageTs] = view.private_metadata.split(";;");
-  if (!channelId || !messageTs || !ALLOWED_CHANNELS.includes(channelId)) return;
-
+async function processStickerRequest({
+  channelId,
+  messageTs,
+  userId,
+  width,
+  height,
+  sixtySeven,
+  selectionTs,
+}: {
+  channelId: string;
+  messageTs: string;
+  userId: string;
+  width: number;
+  height: number;
+  sixtySeven: boolean;
+  selectionTs?: string;
+}) {
+  if (!ALLOWED_CHANNELS.includes(channelId) || !validDimensions(width, height))
+    return;
+  const client = app.client;
   const message = (
     await client.conversations.history({
       channel: channelId,
@@ -577,297 +613,186 @@ app.view("custom_dimensions", async ({ client, body, view, ack }) => {
       inclusive: true,
       limit: 1,
     })
-  )?.messages?.[0];
-
-  if (!message || !message.user) throw new Error("message not found!");
-
-  if (message.user !== body.user.id) {
+  ).messages?.[0];
+  if (!message || message.ts !== messageTs || message.user !== userId) {
     await client.chat.postEphemeral({
       channel: channelId,
-      thread_ts: message.ts,
-      user: body.user.id,
-      text: `you don't have permission to click that button!!`,
+      user: userId,
+      text: "Only the original uploader can create this sticker.",
     });
     return;
   }
-
-  const file = message.files![0]!;
-
-  const title = message.text;
-  if (!title) return;
-
-  console.log(reservedTitles);
-
-  if (
-    reservedTitles.has(title) ||
-    (await db.select().from(stickers).where(eq(stickers.title, title)))
-      .length !== 0
-  ) {
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: message.ts,
-      text: "a sticker with the same name already exists!",
-    });
-    return;
-  }
-
-  if (reservedTitles.size >= 2 || reservedTitles.has(title)) {
-    await client.chat.postEphemeral({
-      channel: channelId,
-      user: body.user.id,
-      text: "The bot is busy creating stickers. Please try again shortly.",
-    });
-    return;
-  }
-  reservedTitles.add(title);
+  const title = message.text ?? "";
+  const file = message.files?.[0];
   try {
-    // This reaction is supposed to show that the sticker is being processed
-    await client.reactions.add({
+    validateStickerInput(title, width, height);
+  } catch {
+    await client.chat.postEphemeral({
       channel: channelId,
-      name: "thinking_face",
-      timestamp: message.ts!,
+      user: userId,
+      text: "Invalid sticker name or dimensions.",
     });
-
-    console.log("creating sticker '", title, "' for", message.user);
-
-    const emojis = await createSticker({
-      fileUrl: file.url_private!,
-      title: title,
-      width: width,
-      height: height,
-      channel: channelId,
-      timestamp: message.ts!,
-      app: app,
-      sixtySeven: wants67(view.state),
-    });
-
-    try {
-      await client.reactions.remove({
-        channel: channelId,
-        name: "thinking_face",
-        timestamp: message.ts!,
-      });
-    } catch {}
-
-    const stickerMessage = await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: message.ts,
-      text: formatSticker(emojis, width),
-    });
-
-    if (!stickerMessage.ok) throw Error("Couldn't send sticker message");
-    if (!stickerMessage.ts)
-      throw Error("Couldn't get timestamp of sticker message");
-
-    const permalink = (
-      await client.chat.getPermalink({
-        channel: channelId,
-        message_ts: stickerMessage.ts,
-      })
-    ).permalink;
-    if (!permalink) throw Error("Couldn't get permalink");
-
-    try {
-      await db.insert(stickers).values({
-        title: title,
-        creator: message.user,
-        emojis: emojis,
-        width: width,
-        height: height,
-        slackPermalink: permalink,
-      });
-    } catch (error) {
-      console.error("error saving sticker:", error);
-      await client.chat.postMessage({
-        channel: channelId,
-        thread_ts: message.ts,
-        text: "oops! there was an error saving your sticker to the database! please try again if you need it to be saved!",
-      });
-    }
-
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: message.ts,
-      text: `<@${message.user}> Done!`,
-    });
-
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: message.ts,
-      text: `P.S. You can access this sticker and many more on the website at ${env.BASE_URL}\nTo delete this sticker, run: /delete-sticker ${title}`,
-    });
-  } catch (error) {
-    const reason = stickerFailureReason(error);
-    app.logger.error("Sticker creation failed", { reason });
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: message.ts,
-      text: `Sticker creation failed: ${reason} Please contact the operator before retrying; some emoji may already have been uploaded.`,
-    });
-  } finally {
-    reservedTitles.delete(title);
+    return;
   }
-});
-
-// Regex matches `{digit}x{digit}`
-app.action(/^\d{1,2}x\d{1,2}$/, async ({ client, action, body, ack }) => {
-  await ack();
-
   if (
-    action.type !== "button" ||
-    !action.value ||
-    body.type !== "block_actions" ||
-    !body.actions[0] ||
-    !body.channel ||
-    !body.message ||
-    !body.message.thread_ts ||
-    !ALLOWED_CHANNELS.includes(body.channel.id)
+    message.files?.length !== 1 ||
+    !file?.url_private ||
+    !isImageFile(file.mimetype ?? "")
   )
     return;
-
-  const [width, height] = body.actions[0].action_id.split("x").map(Number);
-  if (!width || !height || !validDimensions(width, height)) return;
-
-  const message = (
-    await client.conversations.history({
-      channel: body.channel.id,
-      latest: body.message.thread_ts, // it exists!
-      inclusive: true,
-      limit: 1,
-    })
-  )?.messages?.[0];
-
-  if (!message || !message.user) throw new Error("message not found!");
-
-  if (message.user !== body.user.id) {
-    await client.chat.postEphemeral({
-      channel: body.channel.id,
-      thread_ts: message.ts,
-      user: body.user.id,
-      text: `you don't have permission to click that button!!`,
-    });
-    return;
-  }
-
-  const file = message.files![0]!;
-
-  const title = message.text;
-  if (!title) return;
-
-  if (
-    reservedTitles.has(title) ||
-    (await db.select().from(stickers).where(eq(stickers.title, title)))
-      .length !== 0
-  ) {
-    await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: message.ts,
-      text: "a sticker with the same name already exists!",
-    });
-    return;
-  }
-
   if (reservedTitles.size >= 2 || reservedTitles.has(title)) {
     await client.chat.postEphemeral({
-      channel: body.channel.id,
-      user: body.user.id,
-      text: "The bot is busy creating stickers. Please try again shortly.",
+      channel: channelId,
+      user: userId,
+      text: "The bot is busy. Please try again shortly.",
+    });
+    return;
+  }
+  try {
+    checkRateLimit(`create:${userId}`, 6, 60 * 60_000);
+  } catch (error) {
+    await client.chat.postEphemeral({
+      channel: channelId,
+      user: userId,
+      text: stickerFailureReason(error),
     });
     return;
   }
   reservedTitles.add(title);
+  let reserved = false;
+  let reacted = false;
+  let completed = false;
   try {
-    await client.chat.delete({
-      channel: body.channel.id,
-      ts: body.message.ts,
-    });
-
-    // This reaction is supposed to show that the sticker is being processed
-    await client.reactions.add({
-      channel: body.channel.id,
-      name: "thinking_face",
-      timestamp: message.ts!,
-    });
-
-    console.log("creating sticker '", title, "' for", message.user);
-
-    const emojis = await createSticker({
-      fileUrl: file.url_private!,
-      title: title,
-      width: width,
-      height: height,
-      channel: body.channel.id,
-      timestamp: message.ts!,
-      app: app,
-      sixtySeven: wants67(body.state),
-    });
-
-    try {
-      await client.reactions.remove({
-        channel: body.channel.id,
-        name: "thinking_face",
-        timestamp: message.ts!,
+    reserved = await reserveCreation(title, userId, width, height);
+    if (!reserved) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: "That name already exists or has an unfinished job. Use /delete-sticker to clean up your failed job before retrying.",
       });
-    } catch {}
-
-    const stickerMessage = await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: message.ts,
+      return;
+    }
+    if (selectionTs)
+      await client.chat.delete({ channel: channelId, ts: selectionTs });
+    await client.reactions.add({
+      channel: channelId,
+      name: "thinking_face",
+      timestamp: messageTs,
+    });
+    reacted = true;
+    const uploaded: string[] = [];
+    const emojis = await createSticker({
+      fileUrl: file.url_private,
+      title,
+      width,
+      height,
+      channel: channelId,
+      timestamp: messageTs,
+      app,
+      sixtySeven,
+      beforeUpload: (name) => recordPending(title, userId, name),
+      afterUpload: async (name) => {
+        uploaded.push(name);
+        await recordUploaded(title, userId, uploaded);
+      },
+    });
+    const sent = await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: messageTs,
       text: formatSticker(emojis, width),
     });
-
-    if (!stickerMessage.ok) throw Error("Couldn't send sticker message");
-    if (!stickerMessage.ts)
-      throw Error("Couldn't get timestamp of sticker message");
-
+    if (!sent.ts) throw new Error("Couldn't get sticker timestamp");
     const permalink = (
       await client.chat.getPermalink({
-        channel: body.channel.id,
-        message_ts: stickerMessage.ts,
+        channel: channelId,
+        message_ts: sent.ts,
       })
     ).permalink;
-    if (!permalink) throw Error("Couldn't get permalink");
-
-    try {
-      await db.insert(stickers).values({
-        title: title,
-        creator: message.user,
-        emojis: emojis,
-        width: width,
-        height: height,
-        slackPermalink: permalink,
-      });
-    } catch (error) {
-      console.error("error saving sticker:", error);
-      await client.chat.postMessage({
-        channel: body.channel.id,
-        thread_ts: message.ts,
-        text: "oops! there was an error saving your sticker to the database! please try again if you need it to be saved!",
-      });
-    }
-
-    await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: message.ts,
-      text: `<@${message.user}> Done!`,
+    if (!permalink) throw new Error("Couldn't get permalink");
+    await finishCreation({
+      title,
+      creator: userId,
+      width,
+      height,
+      emojis,
+      slackPermalink: permalink,
     });
-
+    reserved = false;
+    completed = true;
     await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: message.ts,
-      text: `P.S. You can access this sticker and many more on the website at ${env.BASE_URL}\nTo delete this sticker, run: /delete-sticker ${title}`,
+      channel: channelId,
+      thread_ts: messageTs,
+      text: `<@${userId}> Done! Browse stickers at ${env.BASE_URL}. To delete: /delete-sticker ${title}`,
     });
   } catch (error) {
+    if (completed) {
+      app.logger.error(
+        "Sticker saved, but its completion notice could not be sent",
+      );
+      return;
+    }
+    if (reserved)
+      await markJobFailed(title, userId).catch(() =>
+        app.logger.error(
+          "Could not mark failed job; its upload ledger is retained",
+        ),
+      );
     const reason = stickerFailureReason(error);
     app.logger.error("Sticker creation failed", { reason });
     await client.chat.postMessage({
-      channel: body.channel.id,
-      thread_ts: message.ts,
-      text: `Sticker creation failed: ${reason} Please contact the operator before retrying; some emoji may already have been uploaded.`,
+      channel: channelId,
+      thread_ts: messageTs,
+      text: `Sticker creation failed: ${reason} Progress has been kept. Run /delete-sticker ${title} to clean up before retrying; uncertain uploads may need operator help.`,
     });
   } finally {
+    if (reacted)
+      await client.reactions
+        .remove({
+          channel: channelId,
+          name: "thinking_face",
+          timestamp: messageTs,
+        })
+        .catch(() => {});
     reservedTitles.delete(title);
   }
+}
+
+app.view("custom_dimensions", async ({ body, view, ack }) => {
+  await ack();
+  if (body.type !== "view_submission") return;
+  const [channelId, messageTs] = view.private_metadata.split(";;");
+  if (!channelId || !messageTs) return;
+  await processStickerRequest({
+    channelId,
+    messageTs,
+    userId: body.user.id,
+    width: Number(view.state.values.width?.width?.value),
+    height: Number(view.state.values.height?.height?.value),
+    sixtySeven: wants67(view.state),
+  });
+});
+
+app.action(/^\d{1,2}x\d{1,2}$/, async ({ action, body, ack }) => {
+  await ack();
+  if (
+    action.type !== "button" ||
+    !("action_id" in action) ||
+    body.type !== "block_actions" ||
+    !body.channel ||
+    !body.message?.thread_ts
+  )
+    return;
+  const [width, height] = action.action_id.split("x").map(Number);
+  if (!width || !height) return;
+  await processStickerRequest({
+    channelId: body.channel.id,
+    messageTs: body.message.thread_ts,
+    userId: body.user.id,
+    width,
+    height,
+    sixtySeven: wants67(body.state),
+    selectionTs: body.message.ts,
+  });
 });
 
 // it's a regex to allow for other names like `sticker-dev` to work
@@ -875,6 +800,12 @@ app.action(/^\d{1,2}x\d{1,2}$/, async ({ client, action, body, ack }) => {
 app.command(/\/sticker.*/, async ({ command, ack, respond }) => {
   await ack();
 
+  try {
+    checkRateLimit(`search:${command.user_id}`, 30, 60_000);
+  } catch (error) {
+    await respond(stickerFailureReason(error));
+    return;
+  }
   const rawQuery = command.text.trim();
 
   if (rawQuery.length > SEARCH_QUERY_MAX_LENGTH) {
@@ -976,8 +907,20 @@ app.action(SEARCH_ACTION_ID, async ({ action, ack, body, client, respond }) => {
 
   if (action.type !== "button" || !body.channel?.id) return;
 
+  try {
+    checkRateLimit(`send:${body.user.id}`, 30, 60_000);
+  } catch (error) {
+    await respond(stickerFailureReason(error));
+    return;
+  }
+
   const stickerId = Number(action.value);
-  if (!Number.isSafeInteger(stickerId)) return;
+  if (
+    !Number.isSafeInteger(stickerId) ||
+    stickerId < 1 ||
+    stickerId > 2147483647
+  )
+    return;
 
   const sticker = await db.query.stickers.findFirst({
     where: eq(stickers.id, stickerId),
@@ -1025,39 +968,62 @@ app.action(SEARCH_ACTION_ID, async ({ action, ack, body, client, respond }) => {
 
 app.command(/\/delete-sticker.*/, async ({ command, ack, respond }) => {
   await ack();
-
-  const stickerTitle = command.text.trim().toLowerCase();
-
-  const sticker = await db.query.stickers.findFirst({
-    where: eq(stickers.title, stickerTitle),
-  });
-
-  if (!sticker) {
-    await respond("I couldn't find that sticker.");
-    return;
-  }
-
-  if (sticker.creator !== command.user_id) {
-    await respond("You didn't create that sticker.");
-    return;
-  }
-
-  await respond("I'm deleting the sticker now.");
-
   try {
-    await deleteEmojis({ emojis: sticker.emojis });
-  } catch {
+    checkRateLimit(`delete:${command.user_id}`, 10, 60_000);
+  } catch (error) {
+    await respond(stickerFailureReason(error));
+    return;
+  }
+  const title = command.text.trim().toLowerCase();
+  if (!/^[a-z0-9_-]{1,50}$/.test(title)) {
+    await respond("Invalid sticker name.");
+    return;
+  }
+  let claimed;
+  try {
+    claimed = await claimDeletion(title, command.user_id);
+  } catch (error) {
+    const safe = [
+      "Sticker not found",
+      "You didn't create that sticker",
+      "Sticker is already being processed",
+    ];
     await respond(
-      "Deletion could not be completed. The sticker record has been kept. Older emoji may need proxy ownership backfill; contact the operator.",
+      error instanceof Error && safe.includes(error.message)
+        ? error.message
+        : "Deletion is temporarily unavailable.",
     );
     return;
   }
-
-  await db.delete(stickers).where(eq(stickers.title, stickerTitle));
-
+  let remaining = [...claimed.job.emojis];
+  let pending = claimed.job.pendingEmoji;
+  const names = [...new Set([...remaining, ...(pending ? [pending] : [])])];
+  try {
+    await respond("I'm deleting the sticker now.");
+    await deleteEmojis({
+      emojis: names,
+      onDeleted: async (name) => {
+        remaining = remaining.filter((emoji) => emoji !== name);
+        if (pending === name) pending = null;
+        await recordDeleted(title, command.user_id, remaining, pending);
+      },
+    });
+    await finishDeletion(title, command.user_id, claimed.sticker?.id);
+  } catch {
+    await markJobFailed(title, command.user_id).catch(() => {});
+    await respond(
+      "Deletion stopped. Progress is retained; retry /delete-sticker to continue. If proxy ownership is unavailable for an uncertain upload, contact the operator.",
+    );
+    return;
+  }
   await respond("The sticker has been deleted!");
+});
+
+// Remove website sessions when Slack deactivates/removes a member.
+app.event("user_change", async ({ event }) => {
+  if (event.user.deleted && event.user.id)
+    await db.delete(sessions).where(eq(sessions.userId, event.user.id));
 });
 
 await app.start();
 app.logger.info("StickerBot has started!!");
-

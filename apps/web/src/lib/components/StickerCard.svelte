@@ -1,8 +1,8 @@
 <script lang="ts">
   import { ClipboardCopy, ThumbsUp } from "@lucide/svelte";
-  import { buttonVariants } from "$lib/components/ui/button";
-  import * as Tooltip from "$lib/components/ui/tooltip";
-  import { getURL } from "$lib/sticker-cache";
+  import { buttonVariants } from "#lib/components/ui/button/index.ts";
+  import * as Tooltip from "#lib/components/ui/tooltip/index.ts";
+  import { getURL } from "#lib/sticker-cache.ts";
   import { toast } from "svelte-sonner";
 
   import type { Sticker } from "../../routes/(authed)/app/api/stickers/+server";
@@ -16,20 +16,28 @@
   }
 
   function toggleLike(sticker: Sticker) {
+    if (liking) return;
+    liking = true;
+    const liked = !sticker.likedByMe;
     toast.promise(
       (async () => {
-        const res = await fetch("/app/api/stickers/like", {
-          method: "POST",
-          body: JSON.stringify({
-            id: sticker.id,
-            liked: !sticker.likedByMe,
-          }),
-        });
-        if (res.ok) sticker.likedByMe = !sticker.likedByMe;
-        else
-          throw new Error(
-            "Failed to like/unlike: " + res.status + res.statusText,
-          );
+        try {
+          const res = await fetch("/app/api/stickers/like", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: sticker.id,
+              liked,
+            }),
+          });
+          if (res.ok) sticker.likedByMe = liked;
+          else
+            throw new Error(
+              "Failed to like/unlike: " + res.status + res.statusText,
+            );
+        } finally {
+          liking = false;
+        }
       })(),
       {
         loading: "Processing...",
@@ -40,6 +48,25 @@
   }
 
   let { sticker }: { sticker: Sticker } = $props();
+  let liking = $state(false);
+  let imageGrid: HTMLDivElement;
+  let synchronized = false;
+  function synchronizeImages() {
+    if (synchronized || !imageGrid) return;
+    const images = [...imageGrid.querySelectorAll("img")];
+    if (
+      images.length !== sticker.emojis.length ||
+      images.some((image) => !image.complete || !image.naturalWidth)
+    )
+      return;
+    synchronized = true;
+    // Restart cached animations together after every tile has loaded.
+    for (const image of images) {
+      const src = image.src;
+      image.src = "";
+      image.src = src;
+    }
+  }
 </script>
 
 <div class="break-inside-avoid rounded-xl bg-white p-4 shadow">
@@ -57,6 +84,7 @@
     <div class="space-x-2 flex">
       <Tooltip.Root>
         <Tooltip.Trigger
+          disabled={liking}
           class={(sticker.likedByMe ? "bg-blue-300" : "") +
             " " +
             buttonVariants({ variant: "ghost" })}
@@ -92,6 +120,7 @@
   </div>
 
   <div
+    bind:this={imageGrid}
     class="mt-3 grid w-max max-w-full"
     style={`grid-template-columns: repeat(${sticker.width}, minmax(0, 1fr));`}
   >
@@ -103,7 +132,10 @@
           class="emoji-sync inline p-0 m-0 h-8 w-8"
           src={emojiUrl}
           alt={`Emoji ${i + 1}`}
+          onload={synchronizeImages}
         />
+      {:catch}
+        <span class="inline w-8 h-8" title="Image unavailable">?</span>
       {/await}
     {/each}
   </div>

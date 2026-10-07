@@ -23,10 +23,10 @@
 </script>
 
 <script lang="ts">
-  import type { WithoutChildrenOrChild } from "$lib/utils.js";
+  import type { WithoutChildrenOrChild } from "#lib/utils.js";
   import type { Snippet } from "svelte";
   import XIcon from "@lucide/svelte/icons/x";
-  import { cn } from "$lib/utils.js";
+  import { cn } from "#lib/utils.js";
   import { Dialog as SheetPrimitive } from "bits-ui";
 
   import SheetOverlay from "./sheet-overlay.svelte";
