@@ -1,6 +1,6 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 
-import type { JWTData } from "$lib/types";
+import type { JWTData } from "#lib/types.ts";
 
 // for information about these interfaces
 declare global {

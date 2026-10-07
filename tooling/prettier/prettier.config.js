@@ -9,9 +9,8 @@
  */
 const config = {
   plugins: [
-    "@prettier/plugin-oxc",
-    "@ianvs/prettier-plugin-sort-imports",
-    "prettier-plugin-svelte",
+    import.meta.resolve("@ianvs/prettier-plugin-sort-imports"),
+    import.meta.resolve("prettier-plugin-svelte"),
   ],
   importOrder: [
     "<TYPES>",

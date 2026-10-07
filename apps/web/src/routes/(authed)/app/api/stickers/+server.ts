@@ -1,7 +1,7 @@
-import { json } from "@sveltejs/kit";
-import { assertUserExists } from "$lib/server/assertion";
+import { error } from "@sveltejs/kit";
+import { assertUserExists } from "#lib/server/assertion.ts";
 
-import { and, desc, eq, exists, lt } from "@repo/db";
+import { and, desc, eq, exists, lt, sql } from "@repo/db";
 import { db } from "@repo/db/client";
 import { stickerLikes, stickers } from "@repo/db/schema";
 
@@ -9,44 +9,51 @@ import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ url, locals }) => {
   assertUserExists(locals.auth);
-
-  const cursor = Number(url.searchParams.get("cursor"));
-  const userId = locals.auth.user;
-  const likedOnly = url.searchParams.get("liked") === "true";
-
-  const rows = await db.query.stickers.findMany({
-    where: and(
-      cursor ? lt(stickers.id, cursor) : undefined,
-      likedOnly
-        ? exists(
-            db
-              .select()
-              .from(stickerLikes)
-              .where(
-                and(
-                  eq(stickerLikes.stickerId, stickers.id),
-                  eq(stickerLikes.userId, userId),
-                ),
-              ),
-          )
-        : undefined,
-    ),
-    with: { stickerLikes: true },
-    orderBy: desc(stickers.id),
-    limit: 15,
-  });
-
-  const stickersSafe = rows.map((sticker) => {
-    const { stickerLikes, ...stickerData } = sticker; // remove 'stickerLikes' from data to prevent leak of users who liked a sticker
-    return {
-      ...stickerData,
-      likedByMe: sticker.stickerLikes.some((x) => x.userId === userId),
-    };
-  });
-
-  return json(stickersSafe);
+  const query = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+  if (query.length > 80) error(400, "Search is too long");
+  const rawCursor = url.searchParams.get("cursor");
+  const cursor = rawCursor === null ? undefined : Number(rawCursor);
+  if (
+    cursor !== undefined &&
+    (!Number.isSafeInteger(cursor) || cursor < 1 || cursor > 2147483647)
+  )
+    error(400, "Invalid cursor");
+  const likedByMe = exists(
+    db
+      .select()
+      .from(stickerLikes)
+      .where(
+        and(
+          eq(stickerLikes.stickerId, stickers.id),
+          eq(stickerLikes.userId, locals.auth.user),
+        ),
+      ),
+  );
+  const rows = await db
+    .select({
+      id: stickers.id,
+      title: stickers.title,
+      createdAt: stickers.createdAt,
+      creator: stickers.creator,
+      width: stickers.width,
+      height: stickers.height,
+      emojis: stickers.emojis,
+      slackPermalink: stickers.slackPermalink,
+      likedByMe: sql<boolean>`${likedByMe}`,
+    })
+    .from(stickers)
+    .where(
+      and(
+        cursor === undefined ? undefined : lt(stickers.id, cursor),
+        url.searchParams.get("liked") === "true" ? likedByMe : undefined,
+        query
+          ? sql`position(${query} in lower(${stickers.title})) > 0`
+          : undefined,
+      ),
+    )
+    .orderBy(desc(stickers.id))
+    .limit(15);
+  return Response.json(rows);
 };
 
-export type Sticker = Omit<typeof stickers.$inferSelect, "likes"> & {
-  likedByMe: boolean;
-};
+export type Sticker = typeof stickers.$inferSelect & { likedByMe: boolean };

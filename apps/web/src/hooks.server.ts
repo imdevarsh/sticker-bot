@@ -1,36 +1,27 @@
-import type { Handle } from "@sveltejs/kit";
-import type { JWTData } from "$lib/types";
-import { redirect } from "@sveltejs/kit";
-import { JWT_SIGNING_SECRET } from "$env/static/private";
-import jwt from "jsonwebtoken";
+import type { Handle } from "@sveltejs/kit/hooks";
+import { error, redirect } from "@sveltejs/kit";
+import { readSession } from "#lib/server/session.ts";
 
 export const handle: Handle = async ({ event, resolve }) => {
-  const token = event.cookies.get("token") ?? null;
-  if (token === null) {
-    event.locals.auth = null;
-    return resolve(event);
-  } else {
+  event.locals.auth = null;
+  const token = event.cookies.get("token");
+  if (token) {
     try {
-      const session = jwt.verify(token, JWT_SIGNING_SECRET, {
-        algorithms: ["HS256"],
-      }) as JWTData;
-      if (
-        session &&
-        typeof session === "object" &&
-        typeof session.user === "string"
-      ) {
-        event.locals.auth = session;
-      } else throw Error("Bad session");
+      event.locals.auth = await readSession(token);
     } catch {
-      event.cookies.delete("token", {
-        path: "/",
-      });
-      event.locals.auth = null;
+      error(503, "Sign-in is temporarily unavailable. Please try again.");
     }
+    if (!event.locals.auth) event.cookies.delete("token", { path: "/" });
   }
-
-  if (event.url.pathname.startsWith("/app") && event.locals.auth === null)
-    throw redirect(307, "/");
-
-  return resolve(event);
+  if (event.url.pathname.startsWith("/app") && !event.locals.auth) {
+    if (event.url.pathname.startsWith("/app/api/"))
+      error(401, "Please sign in again");
+    redirect(303, "/");
+  }
+  const response = await resolve(event);
+  if (event.locals.auth || event.url.pathname.startsWith("/sign-in")) {
+    response.headers.set("Cache-Control", "private, no-store");
+    response.headers.append("Vary", "Cookie");
+  }
+  return response;
 };

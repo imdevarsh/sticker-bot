@@ -44,6 +44,7 @@ export async function downloadSlackImage(
   urlString: string,
   token: string,
   fetcher: typeof fetch = fetch,
+  signal?: AbortSignal,
 ) {
   const url = new URL(urlString);
   // Only Slack's private file host receives the bot credential. Never follow redirects.
@@ -59,7 +60,10 @@ export async function downloadSlackImage(
   const response = await fetcher(url, {
     headers: { Authorization: `Bearer ${token}` },
     redirect: "error",
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.any([
+      AbortSignal.timeout(30_000),
+      ...(signal ? [signal] : []),
+    ]),
   });
   if (!response.ok || !response.body)
     throw new Error("Could not download Slack image");

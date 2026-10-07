@@ -1,0 +1,3 @@
+[install]
+# Keep each workspace's peer dependencies isolated (Svelte's compiler API needs TS6).
+linker = "isolated"

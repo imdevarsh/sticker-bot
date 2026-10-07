@@ -1,9 +1,9 @@
 <script lang="ts">
+  import { buttonVariants } from "#lib/components/ui/button/index.ts";
   import {
     PUBLIC_SLACK_CHANNELS,
     PUBLIC_SLACK_TEAM_DOMAIN,
-  } from "$env/static/public";
-  import { buttonVariants } from "$lib/components/ui/button";
+  } from "$app/env/public";
 </script>
 
 <a

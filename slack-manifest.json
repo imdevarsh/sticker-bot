@@ -37,17 +37,21 @@
         "im:read",
         "im:write",
         "reactions:write",
-        "users:write",
         "files:read",
-        "files:write",
         "channels:history",
-        "groups:history"
+        "groups:history",
+        "users:read"
       ]
     }
   },
   "settings": {
     "event_subscriptions": {
-      "bot_events": ["message.channels", "message.groups", "message.im"]
+      "bot_events": [
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "user_change"
+      ]
     },
     "interactivity": {
       "is_enabled": true

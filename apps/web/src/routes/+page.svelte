@@ -1,5 +1,5 @@
 <script lang="ts">
-  import OpenSlackChannel from "$lib/components/OpenSlackChannel.svelte";
+  import OpenSlackChannel from "#lib/components/OpenSlackChannel.svelte";
 </script>
 
 <div

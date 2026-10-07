@@ -1,9 +1,10 @@
-import { error, json } from "@sveltejs/kit";
-import { assertUserExists } from "$lib/server/assertion";
+import { error } from "@sveltejs/kit";
+import { assertUserExists } from "#lib/server/assertion.ts";
+import { readSmallJSON } from "#lib/server/request.ts";
 
 import { and, eq } from "@repo/db";
 import { db } from "@repo/db/client";
-import { stickerLikes } from "@repo/db/schema";
+import { stickerLikes, stickers } from "@repo/db/schema";
 
 import type { RequestHandler } from "./$types";
 
@@ -12,21 +13,29 @@ export const POST: RequestHandler = async ({ url, locals, request }) => {
 
   if (request.headers.get("origin") !== url.origin)
     error(403, "Invalid origin");
-  const req = await request.json().catch(() => null);
+  const req = await readSmallJSON(request);
   if (
     !req ||
     typeof req !== "object" ||
+    !("liked" in req) ||
     typeof req.liked !== "boolean" ||
+    !("id" in req) ||
     !Number.isSafeInteger(req.id) ||
-    req.id < 1
+    Number(req.id) < 1 ||
+    Number(req.id) > 2147483647
   )
     error(400, "Invalid request");
-  const newLiked = req["liked"] === true;
-  const stickerId = Number(req["id"]);
+  const newLiked = req.liked;
+  const stickerId = Number(req.id);
 
   const userId = locals.auth.user;
 
   if (newLiked) {
+    const sticker = await db.query.stickers.findFirst({
+      where: eq(stickers.id, stickerId),
+      columns: { id: true },
+    });
+    if (!sticker) error(404, "Sticker not found");
     await db
       .insert(stickerLikes)
       .values({ stickerId, userId })
@@ -42,7 +51,7 @@ export const POST: RequestHandler = async ({ url, locals, request }) => {
       );
   }
 
-  return json({
+  return Response.json({
     success: true,
   });
 };

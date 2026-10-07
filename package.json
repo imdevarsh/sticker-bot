@@ -9,7 +9,8 @@
     "start:bot": "turbo start --filter=@repo/bot",
     "typecheck": "turbo typecheck",
     "db:push": "cd packages/db && bun db:push",
-    "db:studio": "cd packages/db && bun db:studio"
+    "db:studio": "cd packages/db && bun db:studio",
+    "db:upgrade": "cd packages/db && bun db:upgrade"
   },
   "workspaces": {
     "packages": [
@@ -26,14 +27,17 @@
     }
   },
   "devDependencies": {
-    "turbo": "^2.11.5"
+    "turbo": "^2.11.7"
   },
   "overrides": {
-    "@sveltejs/kit": {
-      "cookie": "0.7.2"
-    },
     "@esbuild-kit/core-utils": {
-      "esbuild": "0.25.12"
+      "esbuild": "0.28.2"
+    },
+    "@sveltejs/kit": {
+      "typescript": "6.0.3"
+    },
+    "svelte-check": {
+      "typescript": "6.0.3"
     }
   }
 }

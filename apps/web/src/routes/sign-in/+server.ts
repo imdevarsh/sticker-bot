@@ -1,24 +1,23 @@
-import jwt from "jsonwebtoken";
-import { dev } from "$app/environment";
-import { JWT_SIGNING_SECRET } from "$env/static/private";
+import { randomBytes } from "node:crypto";
 import { redirect } from "@sveltejs/kit";
-import { BASE_URL, SLACK_CLIENT_ID, SLACK_TEAM } from "$env/static/private";
-
-import { db } from "@repo/db/client";
-import { authAttempt } from "@repo/db/schema";
+import { dev } from "$app/env";
+import {
+  BASE_URL,
+  JWT_SIGNING_SECRET,
+  SLACK_CLIENT_ID,
+  SLACK_TEAM,
+} from "$app/env/private";
+import jwt from "jsonwebtoken";
 
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ cookies }) => {
-  const { state, nonce, redirectUri } = (
-    await db
-      .insert(authAttempt)
-      .values({
-        redirectUri: BASE_URL + "/sign-in/slack-handler",
-      })
-      .returning()
-  )[0];
-
+  if (JWT_SIGNING_SECRET.length < 32)
+    throw new Error("JWT_SIGNING_SECRET must have at least 32 characters");
+  const state = randomBytes(32).toString("hex");
+  const nonce = randomBytes(32).toString("hex");
+  const redirectUri = BASE_URL + "/sign-in/slack-handler";
+  // No persistent records for abandoned logins. Slack codes are single-use.
   cookies.set(
     "oauth_attempt",
     jwt.sign({ state, nonce }, JWT_SIGNING_SECRET, {
@@ -34,9 +33,16 @@ export const GET: RequestHandler = async ({ cookies }) => {
       maxAge: 600,
     },
   );
-
-  redirect(
-    307,
-    `https://slack.com/openid/connect/authorize?response_type=code&scope=openid%20profile&client_id=${encodeURIComponent(SLACK_CLIENT_ID)}&state=${encodeURIComponent(state)}&team=${encodeURIComponent(SLACK_TEAM)}&nonce=${encodeURIComponent(nonce)}&redirect_uri=${encodeURIComponent(redirectUri)}`,
-  );
+  const params = new URLSearchParams({
+    response_type: "code",
+    scope: "openid profile",
+    client_id: SLACK_CLIENT_ID,
+    state,
+    team: SLACK_TEAM,
+    nonce,
+    redirect_uri: redirectUri,
+  });
+  redirect(303, `https://slack.com/openid/connect/authorize?${params}`, {
+    external: ["https://slack.com"],
+  });
 };

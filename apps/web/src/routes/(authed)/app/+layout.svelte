@@ -2,10 +2,10 @@
   import "../../../app.css";
 
   import type { Snippet } from "svelte";
-  import * as NavigationMenu from "$lib/components/ui/navigation-menu";
-  import { navigationMenuTriggerStyle } from "$lib/components/ui/navigation-menu/navigation-menu-trigger.svelte";
-  import { Toaster } from "$lib/components/ui/sonner";
-  import { Provider } from "$lib/components/ui/tooltip";
+  import * as NavigationMenu from "#lib/components/ui/navigation-menu/index.ts";
+  import { navigationMenuTriggerStyle } from "#lib/components/ui/navigation-menu/navigation-menu-trigger.svelte";
+  import { Toaster } from "#lib/components/ui/sonner/index.ts";
+  import { Provider } from "#lib/components/ui/tooltip/index.ts";
 
   import type { LayoutData } from "./$types";
 
@@ -35,7 +35,7 @@
       <NavigationMenu.Item class="flex">
         <NavigationMenu.Trigger class="px-1.5 py-3.5 mx-2.5">
           <img
-            src={data.auth.image}
+            src={data.auth.image ?? undefined}
             class="rounded-full w-8 h-8 border"
             alt="Your Slack PFP"
           />

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import StickerList from "$lib/components/StickerList.svelte";
-  import { Input } from "$lib/components/ui/input";
+  import StickerList from "#lib/components/StickerList.svelte";
+  import { Input } from "#lib/components/ui/input/index.ts";
 
   let search = $state("");
 </script>

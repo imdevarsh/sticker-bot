@@ -11,8 +11,9 @@
     "with-env": "dotenv -e ../../.env --"
   },
   "devDependencies": {
-    "@repo/tsconfig": "workspace:*",
     "@repo/prettier": "workspace:*",
+    "@repo/tsconfig": "workspace:*",
+    "@slack/types": "^3.2.0",
     "@types/bun": "^1.4.2",
     "dotenv-cli": "^11.0.0",
     "prettier": "catalog:"
@@ -22,7 +23,7 @@
   },
   "dependencies": {
     "@repo/db": "workspace:*",
-    "@slack/bolt": "4.7.3",
+    "@slack/bolt": "5.1.0",
     "@t3-oss/env-core": "^0.13.11",
     "sharp": "^0.35.5",
     "zod": "^4.6.5"

@@ -2,12 +2,9 @@ import { randomBytes } from "crypto";
 import type { App, StringIndexed } from "@slack/bolt";
 import sharp from "sharp";
 
-import { sql } from "@repo/db";
-import { db } from "@repo/db/client";
-
-import { env } from "./env";
 import { make67Sticker } from "./67ify.ts";
 import { emojiProxyRequest } from "./emoji-proxy.ts";
+import { env } from "./env";
 import {
   downloadSlackImage,
   IMAGE_OPTIONS,
@@ -23,6 +20,8 @@ async function updateEmojiCache() {
       headers: {
         "X-Token": env.EMOJI_CACHE_UPDATE_TOKEN,
       },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
     });
   } catch (error) {
     console.error(error);
@@ -42,17 +41,21 @@ export function recommendedStickerDimensions(
   height: number,
 ): number[] {
   const aspectRatio = width / height;
-  let bestFit = [3, 3];
-  let bestDiff = Math.abs(3 / 3 - aspectRatio);
-  let bestArea = 3 * 3;
+  let bestFit = [Math.min(3, width), Math.min(3, height)];
+  let bestDiff = Math.abs(bestFit[0]! / bestFit[1]! - aspectRatio);
+  let bestArea = bestFit[0]! * bestFit[1]!;
 
   for (let rows = 1; rows <= 16; rows++) {
     for (let cols = 1; cols <= 16; cols++) {
       const ratio = cols / rows;
       const diff = Math.abs(ratio - aspectRatio);
       const area = rows * cols;
+      if (cols > width || rows > height) continue;
 
-      if (diff < bestDiff || (diff === bestDiff && area > bestArea)) {
+      if (
+        diff < bestDiff ||
+        (diff === bestDiff && Math.abs(area - 9) < Math.abs(bestArea - 9))
+      ) {
         bestDiff = diff;
         bestFit = [cols, rows];
         bestArea = area;
@@ -75,7 +78,14 @@ export function isImageFile(mimeType: string): boolean {
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function deleteEmojis({ emojis }: { emojis: string[] }) {
+export async function deleteEmojis({
+  emojis,
+  onDeleted,
+}: {
+  emojis: string[];
+  onDeleted?: (name: string) => Promise<void>;
+}) {
+  const signal = AbortSignal.timeout(10 * 60_000);
   for (const name of emojis) {
     await emojiProxyRequest(
       env.SLACK_EMOJI_PROXY_URL,
@@ -85,8 +95,10 @@ export async function deleteEmojis({ emojis }: { emojis: string[] }) {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
+        signal,
       },
     );
+    await onDeleted?.(name);
   }
 }
 
@@ -94,10 +106,12 @@ export async function uploadEmoji({
   emojiName,
   image,
   type,
+  signal,
 }: {
   emojiName: string;
   image: Buffer<ArrayBuffer>;
   type: string;
+  signal?: AbortSignal;
 }) {
   if (image.byteLength > 128 * 1024)
     throw new Error("Emoji exceeds the proxy's 128 KiB limit");
@@ -108,7 +122,7 @@ export async function uploadEmoji({
     env.SLACK_EMOJI_PROXY_URL,
     env.SLACK_EMOJI_PROXY_TOKEN,
     "upload",
-    { method: "POST", body: form },
+    { method: "POST", body: form, signal },
   );
   await sleep(250);
 }
@@ -122,6 +136,8 @@ export async function createSticker({
   timestamp,
   app,
   sixtySeven = false,
+  beforeUpload,
+  afterUpload,
 }: {
   fileUrl: string;
   title: string;
@@ -131,6 +147,8 @@ export async function createSticker({
   timestamp: string;
   app: App<StringIndexed>;
   sixtySeven?: boolean;
+  beforeUpload?: (name: string) => Promise<void>;
+  afterUpload?: (name: string) => Promise<void>;
 }): Promise<string[]> {
   await app.client.chat.postMessage({
     channel: channel,
@@ -139,11 +157,17 @@ export async function createSticker({
   });
 
   validateStickerInput(title, width, height);
-  const source = await downloadSlackImage(fileUrl, env.SLACK_BOT_TOKEN);
-  const image = sharp(
-    sixtySeven ? await make67Sticker(source, width, height) : source,
-    IMAGE_OPTIONS,
+  const signal = AbortSignal.timeout(10 * 60_000);
+  const source = await downloadSlackImage(
+    fileUrl,
+    env.SLACK_BOT_TOKEN,
+    fetch,
+    signal,
   );
+  const image = sharp(
+    sixtySeven ? await make67Sticker(source, width, height, signal) : source,
+    IMAGE_OPTIONS,
+  ).timeout({ seconds: 30 });
   const imgMetadata = await image.metadata();
   validateImageMetadata(imgMetadata);
   const imgWidth = imgMetadata.width;
@@ -158,6 +182,7 @@ export async function createSticker({
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
+      signal.throwIfAborted();
       const newImg = image
         .clone()
         .extract({
@@ -208,6 +233,9 @@ export async function createSticker({
       });
 
       const emojiName = `${title}-${x + 1}-${y + 1}-${randomChars(8)}`;
+      if (buf.byteLength > 128 * 1024)
+        throw new Error("Emoji exceeds the proxy's 128 KiB limit");
+      await beforeUpload?.(emojiName);
       console.log(
         "trying to upload " + emojiName,
         "size:",
@@ -217,8 +245,10 @@ export async function createSticker({
         emojiName: emojiName,
         image: Buffer.from(buf), // don't ask why this works
         type: info.format,
+        signal,
       });
       emojis.push(emojiName);
+      await afterUpload?.(emojiName);
     }
 
     if (y !== height - 1) {
@@ -251,6 +281,3 @@ export function formatSticker(emojis: string[], width: number): string {
     })
     .join("");
 }
-
-// On startup, try to add the extension for Levenshtein distance
-await db.execute(sql`CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;`);
